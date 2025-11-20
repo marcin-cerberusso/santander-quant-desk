@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
 from datetime import datetime
+from ai_oracle import AIOracleEngine  # ML Predictions
 
 # --- KONFIGURACJA STRONY (Musi być na samym początku) ---
 st.set_page_config(
@@ -35,6 +36,9 @@ TICKERS = [
 @st.cache_data(ttl=60)  # Cache na 60 sekund, żeby nie zatykać API
 def get_market_data():
     data_list = []
+    
+    # Initialize AI Oracle
+    oracle = AIOracleEngine()
     
     # Pobieranie batchowe
     tickers_str = " ".join(TICKERS)
@@ -81,6 +85,9 @@ def get_market_data():
             elif price < s20: signal = "SELL"
 
             change_pct = ((price - prev_row['Close']) / prev_row['Close']) * 100
+            
+            # 🧠 AI ORACLE PREDICTION
+            ai_pred = oracle.predict(df)
 
             data_list.append({
                 "Ticker": ticker.replace(".WA", ""),
@@ -90,7 +97,11 @@ def get_market_data():
                 "Signal": signal,
                 "Score": score,
                 "Volume": last_row['Volume'],
-                "History": df # Przechowujemy cały DF do wykresu
+                "History": df,  # Przechowujemy cały DF do wykresu
+                "AI_Prediction": ai_pred['prediction'],
+                "AI_Confidence": ai_pred['confidence'],
+                "AI_Prob_Up": ai_pred['probability_up'],
+                "AI_Prob_Down": ai_pred['probability_down']
             })
             
         except Exception as e:
@@ -137,7 +148,7 @@ if len(top_picks) >= 3:
 col_left, col_right = st.columns([4, 6])
 
 with col_left:
-    st.subheader("📊 Screener Wyników")
+    st.subheader("📊 Screener Wyników + 🧠 AI Oracle")
     
     # Stylizowanie Tabeli
     def color_signal(val):
@@ -150,14 +161,24 @@ with col_left:
     def color_change(val):
         color = '#ff4b4b' if val < 0 else '#00ff00'
         return f'color: {color}'
+    
+    def color_ai_prediction(val):
+        if val == 'UP': return 'color: #00ff00; font-weight: bold'
+        elif val == 'DOWN': return 'color: #ff4b4b; font-weight: bold'
+        return 'color: white'
 
-    # Przygotowanie DF do wyświetlenia (bez kolumny History i Score)
-    display_df = df_sorted[["Ticker", "Price", "Change %", "RSI", "Signal"]].copy()
+    # Przygotowanie DF do wyświetlenia
+    display_df = df_sorted[["Ticker", "Price", "Change %", "RSI", "Signal", "AI_Prediction", "AI_Confidence"]].copy()
+    display_df = display_df.rename(columns={
+        "AI_Prediction": "AI 🧠",
+        "AI_Confidence": "AI Conf%"
+    })
     
     st.dataframe(
         display_df.style.applymap(color_signal, subset=['Signal'])
                         .applymap(color_change, subset=['Change %'])
-                        .format({"Price": "{:.2f}", "Change %": "{:+.2f}", "RSI": "{:.1f}"}),
+                        .applymap(color_ai_prediction, subset=['AI 🧠'])
+                        .format({"Price": "{:.2f}", "Change %": "{:+.2f}", "RSI": "{:.1f}", "AI Conf%": "{:.0f}%"}),
         height=600,
         use_container_width=True,
         hide_index=True
@@ -201,9 +222,37 @@ with col_right:
     )
     
     st.plotly_chart(fig, use_container_width=True)
+    
+    # 🧠 AI ORACLE BOX
+    stock_row = df_market[df_market['Ticker'] == selected_ticker].iloc[0]
+    ai_pred = stock_row['AI_Prediction']
+    ai_conf = stock_row['AI_Confidence']
+    ai_up = stock_row['AI_Prob_Up']
+    ai_down = stock_row['AI_Prob_Down']
+    
+    ai_color = "green" if ai_pred == "UP" else "red"
+    confidence_level = "🔥 STRONG" if ai_conf > 70 else "⚡ MODERATE" if ai_conf > 60 else "💤 WEAK"
+    
+    st.markdown(f"""
+    ### 🧠 AI ORACLE PREDICTION
+    """)
+    
+    col_ai1, col_ai2, col_ai3 = st.columns(3)
+    with col_ai1:
+        st.metric("Direction", f"{ai_pred}", delta=f"{ai_conf:.0f}% confidence")
+    with col_ai2:
+        st.metric("Prob UP ↗", f"{ai_up:.1f}%")
+    with col_ai3:
+        st.metric("Prob DOWN ↘", f"{ai_down:.1f}%")
+    
+    st.info(f"💡 **AI Analysis:** Model predicts **{ai_pred}** with **{confidence_level}** signal ({ai_conf:.0f}% confidence)")
 
 # 5. Stopka z analizą automatyczną
 st.divider()
 best_stock = df_sorted.iloc[0]
-st.info(f"💡 **AI SUGGESTION:** Najsilniejszy trend wykazuje **{best_stock['Ticker']}**. "
-        f"Kurs ({best_stock['Price']}) jest powyżej wszystkich średnich. RSI ({best_stock['RSI']}) wskazuje na siłę, ale kontroluj strefę 70pkt.")
+best_ai = best_stock['AI_Prediction']
+best_ai_conf = best_stock['AI_Confidence']
+
+st.info(f"💡 **COMBINED SUGGESTION:** Najsilniejszy trend wykazuje **{best_stock['Ticker']}** (Score: {best_stock['Score']}). "
+        f"RSI ({best_stock['RSI']}) wskazuje na siłę. "
+        f"🧠 **AI Oracle predicts: {best_ai}** ({best_ai_conf:.0f}% confidence).")
